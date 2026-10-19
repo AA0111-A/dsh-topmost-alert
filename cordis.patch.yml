@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-topmost-alert
+      name: '@local/dsh-topmost-alert'
+      config: {}

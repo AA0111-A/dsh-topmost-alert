@@ -1,0 +1,46 @@
+{
+  "name": "@local/dsh-topmost-alert",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Topmost desktop alert for DeepSeek Harness: pops an always-on-top card when the agent finishes, needs your approval, or asks a question. Windows only.",
+  "author": "AA0111-A (https://github.com/AA0111-A)",
+  "license": "MIT",
+  "homepage": "https://github.com/AA0111-A/dsh-topmost-alert#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AA0111-A/dsh-topmost-alert.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AA0111-A/dsh-topmost-alert/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "notification",
+    "windows",
+    "topmost",
+    "alert"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "popup/alert.ps1",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

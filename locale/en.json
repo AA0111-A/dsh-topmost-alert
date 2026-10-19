@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Topmost Alert",
+    "description": "Shows a topmost desktop alert when the agent finishes or needs your input."
+  }
+}
