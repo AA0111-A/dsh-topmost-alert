@@ -24,6 +24,7 @@ export const DEFAULTS = Object.freeze({
   minTurnSeconds: 5,
   sound: true,
   position: 'bottom-right',
+  dismissWhenClientFocused: true,
 })
 
 const POSITIONS = new Set(['bottom-right', 'top-right', 'bottom-left'])
@@ -152,6 +153,8 @@ export function apply(ctx, config) {
         durationMs: card.durationMs,
         sound: asFlag(option('sound'), DEFAULTS.sound),
         position: position(),
+        clientPid: process.pid,
+        dismissOnClientFocus: asFlag(option('dismissWhenClientFocused'), DEFAULTS.dismissWhenClientFocused),
       })
     } catch (error) {
       logger.warn('could not show alert: %s', describeError(error))

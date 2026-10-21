@@ -76,6 +76,7 @@ Agent 会调用 `plugin_manager install_bundle`，安装完成后插件即生效
 | `minTurnSeconds` | number | `5` | 只对「完成」生效：本轮短于该秒数就不弹，避免快速回答也弹窗。 |
 | `sound` | boolean | `true` | 弹卡时是否播放系统提示音。 |
 | `position` | string | `bottom-right` | 卡片位置：`bottom-right`、`top-right`、`bottom-left`；其他值按 `bottom-right` 处理。 |
+| `dismissWhenClientFocused` | boolean | `true` | Harness 窗口在前台时不弹卡片；卡片显示期间你切回 Harness，它会自动消失。卡片始终不抢键盘焦点。 |
 
 改完配置后重载/重启 DSH 生效（配置在插件挂载时读取）。
 
@@ -92,12 +93,15 @@ Agent 会调用 `plugin_manager install_bundle`，安装完成后插件即生效
 
 1. **Host 半**（`index.js`）订阅 DSH 的四个事件，按配置判断是否提醒，并做去重（3 秒内相同卡片只弹一次）、并发上限（最多 4 张）等节流。
 2. 卡片内容写进 `%TEMP%\dsh-topmost-alert\*.json`（UTF-8），再把文件路径交给 `popup/alert.ps1`，避免中文在命令行/代码页里被破坏。
-3. **弹窗半**（`popup/alert.ps1`）用 Windows PowerShell + WinForms 画一张无边框卡片：按类型取强调色（完成=绿、等待=琥珀、出错=红），`TopMost` 置顶，`SetProcessDPIAware` 保证 200% 缩放下也在屏幕内，点击卡片、点 ×、按 ESC 或到时自动关闭。
+3. **弹窗半**（`popup/alert.ps1`）用 Windows PowerShell + WinForms 画一张无边框卡片：按类型取强调色（完成=绿、等待=琥珀、出错=红），`TopMost` 置顶，`SetProcessDPIAware` 保证 200% 缩放下也在屏幕内；卡片以 `WS_EX_NOACTIVATE` 显示，不抢键盘焦点，点击卡片、点 ×、按 ESC 或到时自动关闭。
 4. 「需要你确认 / 回答」的卡片与审批生命周期绑定：你在 DSH 里作出选择后，对应窗口立即关闭。
+5. 卡片出现时如果 Harness 窗口已经在前台，就直接不弹；卡片显示期间你把 Harness 切到最前，卡片会自动消失（`dismissWhenClientFocused`）。
 
 ### 一些细节
 
 - 只提醒你**直接交互的会话**；子智能体自己完成或报错不提醒（避免团队协作时刷屏）。
+- 卡片不会抢键盘焦点：弹出时你正在其他窗口输入的内容不受影响。
+- 你正在看 Harness 时不打扰：窗口在前台就不弹，切回前台时已显示的动作卡片会自动关闭。
 - DSH 启动后的前 15 秒忽略「完成」提醒，避免恢复旧会话时误弹。
 - 只支持**主显示器**右下角/右上角；多屏目前不跟随光标所在屏幕。
 - 卡片是独立进程，DSH 关闭后不会再有任何提醒。

@@ -16,8 +16,19 @@ $ErrorActionPreference = 'SilentlyContinue'
 # coordinates, which pushes a "bottom-right" card off the real desktop on a
 # scaled display. Declare awareness before any window or Screen query.
 try {
-    Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class DshDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }' -ErrorAction Stop
-    [void][DshDpi]::SetProcessDPIAware()
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DshWin {
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int index);
+    [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hWnd, int index, int value);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+'@ -ErrorAction Stop
+    [void][DshWin]::SetProcessDPIAware()
 } catch { }
 
 $script:DebugLog = $null
@@ -40,6 +51,31 @@ try {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
+    # A card must inform, not grab the keyboard. Prefer a form that overrides
+    # ShowWithoutActivation; fall back to a plain form plus a foreground restore.
+    $script:FormType = 'System.Windows.Forms.Form'
+    $script:NoActivate = $false
+    try {
+        Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' -TypeDefinition @'
+using System.Windows.Forms;
+public class DshCardForm : Form {
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+        get {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+            cp.ExStyle |= 0x00000008; // WS_EX_TOPMOST
+            return cp;
+        }
+    }
+}
+'@ -ErrorAction Stop
+        $script:FormType = 'DshCardForm'
+        $script:NoActivate = $true
+    } catch {
+        $script:NoActivate = $false
+    }
+
     if ([string]::IsNullOrEmpty($PayloadFile) -or -not (Test-Path -LiteralPath $PayloadFile)) {
         Write-Log 'payload missing'
         exit 0
@@ -58,6 +94,8 @@ try {
     $playSound = $true
     $position = 'bottom-right'
     $index = 0
+    $clientPid = 0
+    $dismissOnClientFocus = $false
     if ($null -ne $payload.title) { $title = ([string]$payload.title).Trim() }
     if ($null -ne $payload.subtitle) { $subtitle = ([string]$payload.subtitle).Trim() }
     if ($null -ne $payload.body) { $body = [string]$payload.body }
@@ -80,6 +118,61 @@ try {
     }
     if ($index -lt 0) { $index = 0 }
     if ($index -gt 12) { $index = 12 }
+    if ($null -ne $payload.clientPid) {
+        $parsedPid = 0.0
+        if ([double]::TryParse(([string]$payload.clientPid).Trim(), [ref]$parsedPid)) { $clientPid = [int]$parsedPid }
+    }
+    if ($null -ne $payload.dismissOnClientFocus) {
+        try { $dismissOnClientFocus = [System.Convert]::ToBoolean($payload.dismissOnClientFocus) } catch { $dismissOnClientFocus = $false }
+    }
+
+    # ---- client focus tracking ---------------------------------------------
+    # The card must never cover the composer while the user answers. The Harness
+    # window can belong to an ancestor of the spawning process (Electron main),
+    # so track the client PID and its ancestors up to the shell.
+    $clientPids = New-Object 'System.Collections.Generic.HashSet[int]'
+    if ($dismissOnClientFocus -and $clientPid -gt 0) {
+        try {
+            $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+            $parentOf = @{}
+            $nameOf = @{}
+            foreach ($process in $processes) {
+                $processId = [int]$process.ProcessId
+                $parentOf[$processId] = [int]$process.ParentProcessId
+                $nameOf[$processId] = [string]$process.Name
+            }
+            $stopNames = @('explorer.exe', 'winlogon.exe', 'services.exe', 'svchost.exe')
+            $current = $clientPid
+            for ($depth = 0; $depth -lt 8; $depth++) {
+                if ($current -le 0) { break }
+                [void]$clientPids.Add($current)
+                if (-not $parentOf.ContainsKey($current)) { break }
+                $parent = [int]$parentOf[$current]
+                if ($parent -le 0) { break }
+                if ($nameOf.ContainsKey($parent) -and $stopNames -contains $nameOf[$parent]) { break }
+                $current = $parent
+            }
+            Write-Log ('client pids: ' + (($clientPids | Sort-Object) -join ','))
+        } catch {
+            Write-Log ('client pid lookup failed: ' + $_.Exception.Message)
+        }
+    }
+    function Test-ClientFocused {
+        if ($dismissOnClientFocus -eq $false -or $clientPids.Count -eq 0) {
+            Write-Log ('focus check skipped: dismiss=' + $dismissOnClientFocus + ' pids=' + $clientPids.Count)
+            return $false
+        }
+        $foreground = [DshWin]::GetForegroundWindow()
+        if ($foreground -eq [IntPtr]::Zero) {
+            Write-Log 'focus check: no foreground window'
+            return $false
+        }
+        [uint32]$foregroundPid = 0
+        [void][DshWin]::GetWindowThreadProcessId($foreground, [ref]$foregroundPid)
+        Write-Log ('focus check: foreground=' + $foregroundPid + ' match=' + $clientPids.Contains([int]$foregroundPid))
+        if ($foregroundPid -eq 0) { return $false }
+        return $clientPids.Contains([int]$foregroundPid)
+    }
 
     # ---- palette ------------------------------------------------------------
     $accent = [System.Drawing.Color]::FromArgb(0x3F, 0xB9, 0x50)
@@ -145,7 +238,7 @@ try {
     if ($cardHeight -lt [int][Math]::Round(112 * $dpiScale)) { $cardHeight = [int][Math]::Round(112 * $dpiScale) }
 
     # ---- form ---------------------------------------------------------------
-    $form = New-Object System.Windows.Forms.Form
+    $form = New-Object -TypeName $script:FormType
     $form.Text = 'DSH Alert'
     $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
     $form.ShowInTaskbar = $false
@@ -255,6 +348,17 @@ try {
     $closeLabel.Add_MouseEnter({ $closeLabel.ForeColor = $titleFg })
     $closeLabel.Add_MouseLeave({ $closeLabel.ForeColor = $closeFg })
 
+    # Never take the keyboard focus: remember the current owner and, for a plain
+    # fallback form, hand it back right after showing.
+    $previousForeground = [DshWin]::GetForegroundWindow()
+
+    # Nothing to alert if the user is already looking at the Harness window.
+    if (Test-ClientFocused) {
+        Write-Log 'client already focused; card suppressed'
+        try { $form.Dispose() } catch { }
+        exit 0
+    }
+
     if ($playSound) {
         try {
             if ($kind -eq 'need') { [System.Media.SystemSounds]::Exclamation.Play() }
@@ -265,13 +369,25 @@ try {
 
     $form.Show()
     [System.Windows.Forms.Application]::DoEvents()
-    Write-Log 'shown'
+    if (-not $script:NoActivate -and $previousForeground -ne [IntPtr]::Zero) {
+        try { [void][DshWin]::SetForegroundWindow($previousForeground) } catch { }
+    }
+    Write-Log ('shown noactivate=' + $script:NoActivate)
 
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastFocusCheck = 0
     while (-not $script:Closed) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 25
-        if ($durationMs -gt 0 -and $watch.ElapsedMilliseconds -ge $durationMs) { break }
+        $elapsed = $watch.ElapsedMilliseconds
+        if ($durationMs -gt 0 -and $elapsed -ge $durationMs) { break }
+        if ($clientPids.Count -gt 0 -and ($elapsed - $lastFocusCheck) -ge 250) {
+            $lastFocusCheck = $elapsed
+            if (Test-ClientFocused) {
+                Write-Log 'client focused; closing card'
+                $script:Closed = $true
+            }
+        }
     }
     $watch.Stop()
     Write-Log ('closed after ' + $watch.ElapsedMilliseconds + 'ms')
